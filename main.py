@@ -2,132 +2,103 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_squared_error, r2_score
 from scipy.interpolate import griddata
+import io
 
-# Load dữ liệu
+st.set_page_config(page_title="Прогноз шероховатости Ra", layout="wide")
+st.title("Приложение: Прогноз и анализ шероховатости поверхности Ra при торцевом фрезеровании заготовок из стали 20")
+st.markdown("""
+**Создатель**: Нгуен Нгок Шон - МТ3/МГТУ им. Баумана  
+**Цель**: Прогноз значения Ra по технологическим параметрам и обратный поиск параметров по желаемому Ra при торцевом фрезеровании заготовок из стали 20.  
+**Инструмент**: Торцевая фреза BAP300R-40-22 (D=40 мм, зубьев), пластины APMT1135PDER-M2 OP1215.
+""")
+
 @st.cache_data
-def load_data():
-    df = pd.read_excel('du_lieu_frezing.xlsx')
-    return df
+def load_and_train_model():
+    df = pd.read_excel("du_lieu_frezing.xlsx")
+    X = df[['V', 'S', 't']]
+    y = df['Ra']
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
-df = load_data()
-
-st.title("📊 Ứng dụng dự đoán độ nhám bề mặt Ra khi phay bằng MLP")
-
-# Tiền xử lý
-X = df[['V', 'S', 't']]
-y = df['Ra']
-scaler = MinMaxScaler()
-X_scaled = scaler.fit_transform(X)
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-
-# Huấn luyện mô hình
-@st.cache_resource
-def train_model():
     param_grid = {
-        'hidden_layer_sizes': [(13,)],
-        'learning_rate_init': [0.001],
+        'hidden_layer_sizes': [(10,), (30,), (50,), (20, 10)],
+        'learning_rate_init': [0.001, 0.005],
         'activation': ['relu']
     }
-    grid = GridSearchCV(
-        estimator=MLPRegressor(max_iter=1000, early_stopping=True, random_state=42),
-        param_grid=param_grid,
-        cv=3,
-        scoring='r2'
-    )
+    grid = GridSearchCV(MLPRegressor(max_iter=5000, early_stopping=True, random_state=42),
+                        param_grid, cv=3, scoring='r2', n_jobs=-1)
     grid.fit(X_train, y_train)
-    return grid.best_estimator_
+    model = grid.best_estimator_
+    return df, scaler, model
 
-model = train_model()
-y_pred = model.predict(X_test)
-mse = mean_squared_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
+df, scaler, model = load_and_train_model()
 
-# Tabs giao diện
-tab1, tab2, tab3 = st.tabs(["📈 Phân tích dữ liệu", "🎯 Tìm thông số phù hợp", "🔮 Dự đoán Ra"])
+# Tabs
+tab1, tab2, tab3 = st.tabs(["📊 Данные и графики", "🔍 Обратный поиск по Ra", "📈 Прогноз Ra"])
 
 with tab1:
-    st.subheader("1️⃣ Kết quả mô hình & biểu đồ")
-    st.write(f"**Cấu hình mạng:** 13 neuron, activation='relu', learning_rate=0.001")
-    st.write(f"**R² = {r2:.4f}, MSE = {mse:.4f}**")
+    st.subheader("📊 Таблицы и графики")
+    st.dataframe(df)
 
-    st.subheader("Bảng so sánh dự đoán")
-    df_compare = pd.DataFrame({
-        'Ra thực tế': y_test.reset_index(drop=True),
-        'Ra dự đoán': y_pred
-    })
-    st.dataframe(df_compare)
-
-    st.subheader("Biểu đồ: Ra thực tế vs dự đoán")
+    st.markdown("### График зависимости Ra от (S, V)")
+    x, yv, z = df['S'], df['V'], df['Ra']
+    xi = np.linspace(x.min(), x.max(), 100)
+    yi = np.linspace(yv.min(), yv.max(), 100)
+    xi, yi = np.meshgrid(xi, yi)
+    zi = griddata((x, yv), z, (xi, yi), method='cubic')
     fig1, ax1 = plt.subplots()
-    ax1.scatter(y_test, y_pred, c='blue', label='Dự đoán vs Thực tế')
-    ax1.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--', label='Đường lý tưởng')
-    ax1.set_xlabel('Thực tế Ra (μm)')
-    ax1.set_ylabel('Dự đoán Ra (μm)')
-    ax1.legend()
-    ax1.grid(True)
+    cp = ax1.contourf(xi, yi, zi, cmap='viridis')
+    fig1.colorbar(cp)
+    ax1.set_xlabel('S (мм/зуб)')
+    ax1.set_ylabel('V (м/мин)')
+    ax1.set_title('Ra по (S, V)')
     st.pyplot(fig1)
 
-    st.subheader("Biểu đồ: Ra theo chỉ số mẫu")
-    fig2, ax2 = plt.subplots()
-    ax2.plot(y_test.values, label='Ra thực tế', marker='o')
-    ax2.plot(y_pred, label='Ra dự đoán', marker='x')
-    ax2.set_xlabel('Chỉ số mẫu')
-    ax2.set_ylabel('Ra (μm)')
-    ax2.legend()
-    ax2.grid(True)
-    st.pyplot(fig2)
-
-    st.subheader("Biểu đồ miền: Ra theo (S, V)")
-    x = df['S']
-    yv = df['V']
-    z = df['Ra']
-    xi, yi = np.meshgrid(np.linspace(x.min(), x.max(), 100), np.linspace(yv.min(), yv.max(), 100))
-    zi = griddata((x, yv), z, (xi, yi), method='cubic')
-    fig3, ax3 = plt.subplots()
-    cs = ax3.contourf(xi, yi, zi, levels=20, cmap='viridis')
-    fig3.colorbar(cs, ax=ax3)
-    ax3.set_xlabel('S')
-    ax3.set_ylabel('V')
-    st.pyplot(fig3)
+    st.markdown("### Обучающая кривая (пример)")
+    if hasattr(model, 'loss_curve_'):
+        fig2, ax2 = plt.subplots()
+        ax2.plot(model.loss_curve_)
+        ax2.set_title("Кривая обучения")
+        ax2.set_xlabel("Эпохи")
+        ax2.set_ylabel("Ошибка")
+        st.pyplot(fig2)
 
 with tab2:
-    st.header("Tìm S, V, t cho Ra mong muốn")
-    target_ra = st.number_input("Nhập giá trị Ra mong muốn (μm)", value=1.2, format="%.2f")
-    n = st.slider("Số kết quả gợi ý", 1, 10, 4)
+    st.subheader("🔍 Обратный поиск по Ra")
+    target_ra = st.number_input("Желаемое значение Ra (μm):", 0.1, 10.0, 1.2, 0.1)
+    num_results = st.slider("Количество комбинаций для вывода:", 1, 10, 4)
 
-    if st.button("Tìm thông số"):
+    if st.button("🔎 Найти параметры"):
         V_range = np.linspace(df['V'].min(), df['V'].max(), 30)
         S_range = np.linspace(df['S'].min(), df['S'].max(), 30)
         t_range = np.linspace(df['t'].min(), df['t'].max(), 30)
-
         results = []
         for v in V_range:
             for s in S_range:
                 for t in t_range:
-                    row = pd.DataFrame([[v, s, t]], columns=['V', 'S', 't'])
-                    row_scaled = scaler.transform(row)
-                    ra = model.predict(row_scaled)[0]
-                    sai_so = abs(ra - target_ra)
-                    results.append((sai_so, v, s, t, ra))
-
+                    input_df = pd.DataFrame([[v, s, t]], columns=['V', 'S', 't'])
+                    input_scaled = scaler.transform(input_df)
+                    ra = model.predict(input_scaled)[0]
+                    err = abs(ra - target_ra)
+                    results.append((err, v, s, t, ra))
         results.sort()
-        top_k = results[:n]
-        df_result = pd.DataFrame(top_k, columns=['Sai số', 'V', 'S', 't', 'Ra dự đoán'])
-        st.dataframe(df_result.drop(columns='Sai số').reset_index(drop=True))
+        out_df = pd.DataFrame(results[:num_results], columns=['Ошибка', 'V (м/мин)', 'S (мм/зуб)', 't (мм)', 'Ra прогноз'])
+        st.dataframe(out_df)
 
 with tab3:
-    st.header("Dự đoán Ra từ thông số cắt")
-    s = st.number_input("S - Lượng chạy dao (mm/tooth)", value=0.15, format="%.3f")
-    v = st.number_input("V - Tốc độ cắt (m/min)", value=120.0, format="%.1f")
-    t = st.number_input("t - Chiều sâu cắt (mm)", value=0.5, format="%.3f")
+    st.subheader("📈 Прогноз Ra")
+    v = st.number_input("Скорость резания V (м/мин):", 10.0, 300.0, 120.0, 5.0)
+    s = st.number_input("Подача на зуб S (мм/зуб):", 0.01, 1.0, 0.15, 0.01)
+    t = st.number_input("Глубина резания t (мм):", 0.1, 5.0, 0.5, 0.1)
 
-    if st.button("Dự đoán"):
+    if st.button("📉 Прогнозировать Ra"):
         input_df = pd.DataFrame([[v, s, t]], columns=['V', 'S', 't'])
         input_scaled = scaler.transform(input_df)
         ra_pred = model.predict(input_scaled)[0]
-        st.success(f"✅ Dự đoán Ra: {ra_pred:.4f} μm")
+        st.success(f"Прогнозируемое Ra: {ra_pred:.4f} μm при V={v} м/мин, S={s} мм/зуб, t={t} мм")
